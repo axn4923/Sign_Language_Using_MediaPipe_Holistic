@@ -80,9 +80,9 @@ def draw_styled_landmarks(image,
 #     cap.release()
 #     cv2.destroyAllWindows()
 
-
+#
 # draw_landmarks(frame, results)
-
+#
 # plt.imshow(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
 
 # pose = []
@@ -111,7 +111,7 @@ DATA_PATH = os.path.join('MP_Data')
 CSV_PATH = os.path.join('CSV_Data')
 
 # Actions that we try to detect
-actions = np.array(['hello', 'thanks', 'iloveyou']) # 'sleep', 'finish'
+actions = np.array(['hello', 'thanks', 'iloveyou', 'Okay', 'see ya later'])
 
 # Thirty videos worth of data
 no_sequences = 30
@@ -122,69 +122,204 @@ sequence_length = 30
 # Folder start
 start_folder = 30
 
-for action in actions:
-    for sequence in range(no_sequences):
-        try:
-            os.makedirs(os.path.join(DATA_PATH, action, str(sequence)))
-            os.makedirs(os.path.join(CSV_PATH, action, str(sequence)))
-        except:
-            pass
+# for action in actions:
+#     for sequence in range(no_sequences):
+#         try:
+#             os.makedirs(os.path.join(DATA_PATH, action, str(sequence)))
+#             os.makedirs(os.path.join(CSV_PATH, action, str(sequence)))
+#         except:
+#             pass
+#
+# # Collect Key Point Values for Training and Testing
+# cap = cv2.VideoCapture(0)
+# # Set mediapipe model
+# with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=0.5) as holistic:
+#     # NEW LOOP
+#     # Loop through actions
+#     for action in actions:
+#         # Loop through sequences aka videos
+#         for sequence in range(no_sequences):
+#             # Loop through video length aka sequence length
+#             for frame_num in range(sequence_length):
+#
+#                 # Read feed
+#                 ret, frame = cap.read()
+#
+#                 # Make detections
+#                 image, results = mediapipe_detection(frame, holistic)
+#
+#                 # Draw landmarks
+#                 draw_styled_landmarks(image, results)
+#
+#                 # NEW Apply wait logic
+#                 if frame_num == 0:
+#                     cv2.putText(image, 'STARTING COLLECTION', (120, 200),
+#                                 cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 4, cv2.LINE_AA)
+#                     cv2.putText(image, 'Collecting frames for {} Video Number {}'.format(action, sequence), (15, 12),
+#                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
+#                     # Show to screen
+#                     cv2.imshow('OpenCV Feed', image)
+#                     cv2.waitKey(700)
+#                 else:
+#                     cv2.putText(image, 'Collecting frames for {} Video Number {}'.format(action, sequence), (15, 12),
+#                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
+#                     # Show to screen
+#                     cv2.imshow('OpenCV Feed', image)
+#
+#                 # NEW Export keypoints
+#                 keypoints = extract_keypoints(results)
+#                 npy_path = os.path.join(DATA_PATH, action, str(sequence), str(frame_num))
+#                 np.save(npy_path, keypoints)  # saved as npy file in MP_DATA folder
+#
+#                 csv_path = os.path.join(CSV_PATH, action, str(sequence), str(frame_num))
+#                 pd.DataFrame(keypoints).to_csv(csv_path)  # saved as csv file in CSV_DATA folder
+#                 # np.savetxt(csv_path, keypoints)  # this line save the keypoints in a txt file MP_DataFolder
+#                 # Each file has 30 frames of data. Each frame contains 1662 key points (xyz (visability for face only))
+#                 # from landmarks of pose(33*4), face(468*3), left hand(21*3), right hand(21*3), respectively.
+#
+#                 # print(npy_path)
+#                 # print(keypoints)
+#
+#                 # Break gracefully
+#                 if cv2.waitKey(10) & 0xFF == ord('q'):
+#                     break
+#
+#     cap.release()
+#     cv2.destroyAllWindows()
+# cap.release()
+# cv2.destroyAllWindows()
 
-# Collect Key Point Values for Training and Testing
+# Preprocess Data and Create Labels and Features
+from sklearn.model_selection import train_test_split
+from tensorflow.keras.utils import to_categorical
+
+label_map = {label:num for num, label in enumerate(actions)}
+
+sequences, labels = [], []
+for action in actions:
+    for sequence in np.array(os.listdir(os.path.join(DATA_PATH, action))).astype(int):
+        window = []
+        for frame_num in range(sequence_length):
+            res = np.load(os.path.join(DATA_PATH, action, str(sequence), "{}.npy".format(frame_num)))
+            window.append(res)
+        sequences.append(window)
+        labels.append(label_map[action])
+
+X = np.array(sequences)
+y = to_categorical(labels).astype(int)
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.05)
+
+# Build and Train LSTM Neural Network
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense
+from tensorflow.keras.callbacks import TensorBoard
+
+# log_dir = os.path.join('Logs')
+# tb_callback = TensorBoard(log_dir=log_dir)
+
+model = Sequential()
+model.add(LSTM(64, return_sequences=True, activation='relu', input_shape=(30,1662)))
+model.add(LSTM(128, return_sequences=True, activation='relu'))
+model.add(LSTM(64, return_sequences=False, activation='relu'))
+model.add(Dense(64, activation='relu'))
+model.add(Dense(32, activation='relu'))
+model.add(Dense(actions.shape[0], activation='softmax'))
+
+model.compile(optimizer='Adam', loss='categorical_crossentropy', metrics=['categorical_accuracy'])
+
+#model.fit(X_train, y_train, epochs=100, callbacks=[tb_callback])
+
+#model.summary()
+
+# Save Weight
+#model.save('action.h5') # ------------------------Save then comment out and load new model
+### del model
+model.load_weights('action.h5')
+
+### Evaluation using Confusion Matrix and Accuracy
+# from sklearn.metrics import multilabel_confusion_matrix, accuracy_score
+#
+# yhat = model.predict(X_train)    # or X_train
+#
+# ytrue = np.argmax(y_train, axis=1).tolist()  # or y_train
+# yhat = np.argmax(yhat, axis=1).tolist()
+#
+# print(multilabel_confusion_matrix(ytrue, yhat))
+# print(accuracy_score(ytrue, yhat))
+
+### Test in Real Time
+colors = [(245, 117, 16), (117, 245, 16), (16, 117, 245)]
+
+
+def prob_viz(res, actions, input_frame, colors):
+    output_frame = input_frame.copy()
+    for num, prob in enumerate(res):
+        cv2.rectangle(output_frame, (0, 60 + num * 40), (int(prob * 100), 90 + num * 40), colors[1], -1)
+        cv2.putText(output_frame, actions[num], (0, 85 + num * 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2,
+                    cv2.LINE_AA)
+
+    return output_frame
+
+# 1. New detection variables
+sequence = []
+sentence = []
+predictions = []
+threshold = 0.80
+
 cap = cv2.VideoCapture(0)
 # Set mediapipe model
 with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=0.5) as holistic:
-    # NEW LOOP
-    # Loop through actions
-    for action in actions:
-        # Loop through sequences aka videos
-        for sequence in range(no_sequences):
-            # Loop through video length aka sequence length
-            for frame_num in range(sequence_length):
+    while cap.isOpened():
 
-                # Read feed
-                ret, frame = cap.read()
+        # Read feed
+        ret, frame = cap.read()
 
-                # Make detections
-                image, results = mediapipe_detection(frame, holistic)
+        # Make detections
+        image, results = mediapipe_detection(frame, holistic)
+        print(results)
 
-                # Draw landmarks
-                draw_styled_landmarks(image, results)
+        # Draw landmarks
+        draw_styled_landmarks(image, results)
 
-                # NEW Apply wait logic
-                if frame_num == 0:
-                    cv2.putText(image, 'STARTING COLLECTION', (120, 200),
-                                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 4, cv2.LINE_AA)
-                    cv2.putText(image, 'Collecting frames for {} Video Number {}'.format(action, sequence), (15, 12),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
-                    # Show to screen
-                    cv2.imshow('OpenCV Feed', image)
-                    cv2.waitKey(700)
-                else:
-                    cv2.putText(image, 'Collecting frames for {} Video Number {}'.format(action, sequence), (15, 12),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
-                    # Show to screen
-                    cv2.imshow('OpenCV Feed', image)
+        # 2. Prediction logic
+        keypoints = extract_keypoints(results)
+        sequence.append(keypoints)
+        sequence = sequence[-30:]
 
-                # NEW Export keypoints
-                keypoints = extract_keypoints(results)
-                npy_path = os.path.join(DATA_PATH, action, str(sequence), str(frame_num))
-                np.save(npy_path, keypoints)  # saved as npy file in MP_DATA folder
+        if len(sequence) == 30:
+            res = model.predict(np.expand_dims(sequence, axis=0))[0]
+            print(actions[np.argmax(res)])
+            predictions.append(np.argmax(res))
 
-                csv_path = os.path.join(CSV_PATH, action, str(sequence), str(frame_num))
-                pd.DataFrame(keypoints).to_csv(csv_path)  # saved as csv file in CSV_DATA folder
-                # np.savetxt(csv_path, keypoints)  # this line save the keypoints in a txt file MP_DataFolder
-                # Each file has 30 frames of data. Each frame contains 1662 key points (xyz (visability for face only))
-                # from landmarks of pose(33*4), face(468*3), left hand(21*3), right hand(21*3), respectively.
+            # 3. Viz logic
+            if np.unique(predictions[-10:])[0] == np.argmax(res):
+                if res[np.argmax(res)] > threshold:
 
-                # print(npy_path)
-                # print(keypoints)
+                    if len(sentence) > 0:
+                        if actions[np.argmax(res)] != sentence[-1]:
+                            sentence.append(actions[np.argmax(res)])
+                    else:
+                        sentence.append(actions[np.argmax(res)])
 
-                # Break gracefully
-                if cv2.waitKey(10) & 0xFF == ord('q'):
-                    break
+            if len(sentence) > 5:
+                sentence = sentence[-5:]
 
+            # Viz probabilities
+            image = prob_viz(res, actions, image, colors)
+
+        cv2.rectangle(image, (0, 0), (640, 40), (245, 117, 16), -1)
+        cv2.putText(image, ' '.join(sentence), (3, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
+
+        # Show to screen
+        cv2.imshow('OpenCV Feed', image)
+
+        # Break gracefully
+        if cv2.waitKey(10) & 0xFF == ord('q'):
+            break
     cap.release()
     cv2.destroyAllWindows()
 cap.release()
 cv2.destroyAllWindows()
+
